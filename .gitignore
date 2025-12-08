@@ -84,4 +84,3 @@ config.toml
 
 # Temporary files
 /tmp/
-*.swn
