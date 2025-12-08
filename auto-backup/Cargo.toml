@@ -1,0 +1,12 @@
+[package]
+name = "auto-backup"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+zip = "0.6"
+chrono = "0.4"
+walkdir = "2.4"
+dirs = "5.0"
