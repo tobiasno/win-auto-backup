@@ -9,6 +9,8 @@ use zip::CompressionMethod;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+const DEFAULT_FOLDER_NAME: &str = "backup_source";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -23,6 +25,7 @@ struct Config {
 
 impl Config {
     // Get all source folders, combining single and multiple configurations
+    // If both source_folder and source_folders are set, source_folders takes precedence
     fn get_source_folders(&self) -> Vec<String> {
         if !self.source_folders.is_empty() {
             self.source_folders.clone()
@@ -272,7 +275,7 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
             // Use the folder name as the prefix
             source.file_name()
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("folder"))
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER_NAME))
         };
         
         WalkDir::new(source)
@@ -292,6 +295,13 @@ fn build_context() -> Result<BackupContext> {
     let log_path = build_log_path()?;
     let config = load_or_create_config(&config_path)?;
     let timestamp = generate_timestamp();
+    
+    // Warn if both source_folder and source_folders are configured
+    if config.source_folder.is_some() && !config.source_folders.is_empty() {
+        eprintln!("Warning: Both 'source_folder' and 'source_folders' are configured.");
+        eprintln!("Using 'source_folders' and ignoring 'source_folder'.");
+        eprintln!();
+    }
     
     Ok(BackupContext {
         config,
