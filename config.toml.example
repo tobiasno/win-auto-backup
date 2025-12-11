@@ -1,8 +1,19 @@
 # Auto-Backup Configuration File
-# Copy this file to %APPDATA%\auto-backup\config.toml and edit the values
+# Copy this file to %APPDATA%\Roaming\auto-backup\config.toml and edit the values
 
-# Source folder to backup (the folder you want to backup)
-source_folder = "C:\\Users\\YourUsername\\Documents"
+# Source folders to backup - you can specify multiple folders
+# For a single folder backup (files will be at the root of the zip):
+# source_folders = ["C:\\Users\\YourUsername\\Documents"]
+
+# For multiple folders (each will be in a separate folder in the zip):
+source_folders = [
+    "C:\\Users\\YourUsername\\Documents",
+    "C:\\Users\\YourUsername\\Pictures"
+]
+
+# Backward compatibility: you can still use source_folder for a single folder
+# Note: If both source_folder and source_folders are set, source_folders takes precedence
+# source_folder = "C:\\Users\\YourUsername\\Documents"
 
 # Destination folder (where backups will be saved, e.g., OneDrive folder)
 destination_path = "C:\\Users\\YourUsername\\OneDrive"

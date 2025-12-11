@@ -9,13 +9,32 @@ use zip::CompressionMethod;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+const DEFAULT_FOLDER_NAME: &str = "backup_source";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Config {
-    source_folder: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_folder: Option<String>,
+    #[serde(default)]
+    source_folders: Vec<String>,
     destination_path: String,
     base_name: String,
     max_backups: usize,
     compression_level: Option<u8>,
+}
+
+impl Config {
+    // Get all source folders, combining single and multiple configurations
+    // If both source_folder and source_folders are set, source_folders takes precedence
+    fn get_source_folders(&self) -> Vec<String> {
+        if !self.source_folders.is_empty() {
+            self.source_folders.clone()
+        } else if let Some(ref folder) = self.source_folder {
+            vec![folder.clone()]
+        } else {
+            vec![]
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,7 +47,8 @@ struct BackupContext {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            source_folder: String::from("C:\\Users\\YourUsername\\Documents"),
+            source_folder: None,
+            source_folders: vec![String::from("C:\\Users\\YourUsername\\Documents")],
             destination_path: String::from("C:\\Users\\YourUsername\\OneDrive"),
             base_name: String::from("Backup"),
             max_backups: 30,
@@ -206,21 +226,23 @@ fn add_directory_to_zip(
     Ok(())
 }
 
-// Process entries using functional composition
-fn process_entry(
+// Process entries with an optional prefix for multi-source backups
+fn process_entry_with_prefix(
     zip: &mut zip::ZipWriter<File>,
     entry: walkdir::DirEntry,
     source: &Path,
+    prefix: &Path,
     options: FileOptions,
 ) -> Result<()> {
     let path = entry.path();
     let name = path.strip_prefix(source)?;
     
     if !name.as_os_str().is_empty() {
+        let full_name = prefix.join(name);
         if path.is_file() {
-            add_file_to_zip(zip, path, name, options)
+            add_file_to_zip(zip, path, &full_name, options)
         } else {
-            add_directory_to_zip(zip, name, options)
+            add_directory_to_zip(zip, &full_name, options)
         }
     } else {
         Ok(())
@@ -228,7 +250,7 @@ fn process_entry(
 }
 
 fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
-    let source = Path::new(&ctx.config.source_folder);
+    let sources = ctx.config.get_source_folders();
     let destination = Path::new(&ctx.config.destination_path);
     let zip_name = generate_zip_name(&ctx.config.base_name, &ctx.timestamp);
     let zip_path = destination.join(&zip_name);
@@ -241,10 +263,26 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(compression_level as i32));
     
-    WalkDir::new(source)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .try_for_each(|entry| process_entry(&mut zip, entry, source, options))?;
+    let single_source = sources.len() == 1;
+    
+    for source_str in &sources {
+        let source = Path::new(source_str);
+        
+        // For multiple sources, create a folder in the zip with the source's name
+        let prefix = if single_source {
+            PathBuf::new()
+        } else {
+            // Use the folder name as the prefix
+            source.file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER_NAME))
+        };
+        
+        WalkDir::new(source)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .try_for_each(|entry| process_entry_with_prefix(&mut zip, entry, source, &prefix, options))?;
+    }
     
     zip.finish()?;
     println!("Backup created: {}", zip_path.display());
@@ -258,6 +296,13 @@ fn build_context() -> Result<BackupContext> {
     let config = load_or_create_config(&config_path)?;
     let timestamp = generate_timestamp();
     
+    // Warn if both source_folder and source_folders are configured
+    if config.source_folder.is_some() && !config.source_folders.is_empty() {
+        eprintln!("Warning: Both 'source_folder' and 'source_folders' are configured.");
+        eprintln!("Using 'source_folders' and ignoring 'source_folder'.");
+        eprintln!();
+    }
+    
     Ok(BackupContext {
         config,
         log_path,
@@ -268,17 +313,31 @@ fn build_context() -> Result<BackupContext> {
 // Display functions - pure, side-effect free (returns strings)
 fn format_header(ctx: &BackupContext) -> Vec<String> {
     let zip_name = generate_zip_name(&ctx.config.base_name, &ctx.timestamp);
-    vec![
+    let sources = ctx.config.get_source_folders();
+    let mut lines = vec![
         "Auto-Backup starting...".to_string(),
         String::new(),
         format!("Log file: {}", ctx.log_path.display()),
         String::new(),
-        format!("Source: {}", ctx.config.source_folder),
+    ];
+    
+    if sources.len() == 1 {
+        lines.push(format!("Source: {}", sources[0]));
+    } else {
+        lines.push(format!("Sources ({} folders):", sources.len()));
+        for source in &sources {
+            lines.push(format!("  - {}", source));
+        }
+    }
+    
+    lines.extend(vec![
         format!("Destination: {}", ctx.config.destination_path),
         format!("Backup filename: {}", zip_name),
         format!("Keeping the last {} backups", ctx.config.max_backups),
         String::new(),
-    ]
+    ]);
+    
+    lines
 }
 
 // Side effect: print lines
@@ -288,10 +347,17 @@ fn print_lines(lines: Vec<String>) {
 
 // Validation pipeline
 fn validate_backup_paths(ctx: &BackupContext) -> Result<()> {
-    let source = Path::new(&ctx.config.source_folder);
+    let sources = ctx.config.get_source_folders();
     let destination = Path::new(&ctx.config.destination_path);
     
-    validate_path(source, "Source folder")?;
+    if sources.is_empty() {
+        return Err("No source folders configured".into());
+    }
+    
+    for source in &sources {
+        validate_path(Path::new(source), "Source folder")?;
+    }
+    
     validate_path(destination, "Destination folder")?;
     Ok(())
 }
