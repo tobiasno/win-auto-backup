@@ -239,9 +239,11 @@ fn process_entry_with_prefix(
     if !name.as_os_str().is_empty() {
         let full_name = prefix.join(name);
         if path.is_file() {
-            add_file_to_zip(zip, path, &full_name, options).map(|_| 1)
+            add_file_to_zip(zip, path, &full_name, options)?;
+            Ok(1)
         } else {
-            add_directory_to_zip(zip, &full_name, options).map(|_| 0)
+            add_directory_to_zip(zip, &full_name, options)?;
+            Ok(0)
         }
     } else {
         Ok(0)
@@ -278,14 +280,14 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER_NAME))
         };
         
-        // Collect file counts using functional composition
-        let count: usize = WalkDir::new(source)
+        // Accumulate file counts using functional composition with try_fold
+        let count = WalkDir::new(source)
             .into_iter()
             .filter_map(|e| e.ok())
-            .map(|entry| process_entry_with_prefix(&mut zip, entry, source, &prefix, options))
-            .collect::<Result<Vec<_>>>()?
-            .iter()
-            .sum();
+            .try_fold(0, |acc, entry| {
+                process_entry_with_prefix(&mut zip, entry, source, &prefix, options)
+                    .map(|file_count| acc + file_count)
+            })?;
         
         total_files += count;
     }
