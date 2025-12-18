@@ -87,7 +87,7 @@ fn validate_path(path: &Path, path_type: &str) -> Result<()> {
 // Impure functions - side effects isolated and explicit
 fn ensure_directory(path: &Path) -> io::Result<()> {
     path.parent()
-        .map(|p| fs::create_dir_all(p))
+        .map(fs::create_dir_all)
         .unwrap_or(Ok(()))
 }
 
@@ -202,14 +202,13 @@ fn cleanup_old_backups(ctx: &BackupContext) -> Result<()> {
     Ok(())
 }
 
-// Functional zip entry processing
+// Functional zip entry processing - pure operations without logging
 fn add_file_to_zip(
     zip: &mut zip::ZipWriter<File>,
     path: &Path,
     name: &Path,
     options: FileOptions,
 ) -> Result<()> {
-    println!("Adding: {}", name.display());
     zip.start_file(name.to_string_lossy().to_string(), options)?;
     let mut file = File::open(path)?;
     io::copy(&mut file, zip)?;
@@ -221,31 +220,31 @@ fn add_directory_to_zip(
     name: &Path,
     options: FileOptions,
 ) -> Result<()> {
-    println!("Adding directory: {}", name.display());
     zip.add_directory(name.to_string_lossy().to_string(), options)?;
     Ok(())
 }
 
 // Process entries with an optional prefix for multi-source backups
+// Returns the count of processed items for progress tracking
 fn process_entry_with_prefix(
     zip: &mut zip::ZipWriter<File>,
     entry: walkdir::DirEntry,
     source: &Path,
     prefix: &Path,
     options: FileOptions,
-) -> Result<()> {
+) -> Result<usize> {
     let path = entry.path();
     let name = path.strip_prefix(source)?;
     
     if !name.as_os_str().is_empty() {
         let full_name = prefix.join(name);
         if path.is_file() {
-            add_file_to_zip(zip, path, &full_name, options)
+            add_file_to_zip(zip, path, &full_name, options).map(|_| 1)
         } else {
-            add_directory_to_zip(zip, &full_name, options)
+            add_directory_to_zip(zip, &full_name, options).map(|_| 0)
         }
     } else {
-        Ok(())
+        Ok(0)
     }
 }
 
@@ -264,6 +263,7 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
         .compression_level(Some(compression_level as i32));
     
     let single_source = sources.len() == 1;
+    let mut total_files = 0usize;
     
     for source_str in &sources {
         let source = Path::new(source_str);
@@ -278,14 +278,20 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER_NAME))
         };
         
-        WalkDir::new(source)
+        // Collect file counts using functional composition
+        let count: usize = WalkDir::new(source)
             .into_iter()
             .filter_map(|e| e.ok())
-            .try_for_each(|entry| process_entry_with_prefix(&mut zip, entry, source, &prefix, options))?;
+            .map(|entry| process_entry_with_prefix(&mut zip, entry, source, &prefix, options))
+            .collect::<Result<Vec<_>>>()?
+            .iter()
+            .sum();
+        
+        total_files += count;
     }
     
     zip.finish()?;
-    println!("Backup created: {}", zip_path.display());
+    println!("Backup created: {} ({} files)", zip_path.display(), total_files);
     Ok(())
 }
 
