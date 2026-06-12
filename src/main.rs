@@ -86,9 +86,7 @@ fn validate_path(path: &Path, path_type: &str) -> Result<()> {
 
 // Impure functions - side effects isolated and explicit
 fn ensure_directory(path: &Path) -> io::Result<()> {
-    path.parent()
-        .map(fs::create_dir_all)
-        .unwrap_or(Ok(()))
+    path.parent().map(fs::create_dir_all).unwrap_or(Ok(()))
 }
 
 fn write_config(path: &Path, config: &Config) -> Result<()> {
@@ -139,11 +137,12 @@ fn load_or_create_config(config_path: &Path) -> Result<Config> {
 // Pure function to filter and collect backup files
 fn find_backup_files(destination: &Path, base_name: &str) -> Result<Vec<PathBuf>> {
     let pattern = format!("{}_", base_name);
-    
+
     fs::read_dir(destination)?
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
-            entry.file_name()
+            entry
+                .file_name()
                 .to_str()
                 .map(|name| name.starts_with(&pattern) && name.ends_with(".zip"))
                 .unwrap_or(false)
@@ -154,11 +153,7 @@ fn find_backup_files(destination: &Path, base_name: &str) -> Result<Vec<PathBuf>
 
 // Pure function to sort files by modification time
 fn sort_by_modified_time(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
-    files.sort_by_cached_key(|path| {
-        fs::metadata(path)
-            .and_then(|m| m.modified())
-            .ok()
-    });
+    files.sort_by_cached_key(|path| fs::metadata(path).and_then(|m| m.modified()).ok());
     files.reverse();
     files
 }
@@ -170,10 +165,11 @@ fn files_to_delete(files: Vec<PathBuf>, keep: usize) -> Vec<PathBuf> {
 
 // Side effect: delete a single file with logging
 fn delete_file_logged(path: &PathBuf, log_path: &Path) -> Result<()> {
-    let name = path.file_name()
+    let name = path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
-    
+
     println!("Deleting: {}", name);
     fs::remove_file(path)?;
     append_log(log_path, &format!("Deleted: {}", name))?;
@@ -189,22 +185,26 @@ fn remove_partial_backup(path: &Path) {
 // Functional cleanup using composition
 fn cleanup_old_backups(ctx: &BackupContext) -> Result<()> {
     let destination = Path::new(&ctx.config.destination_path);
-    let backups = find_backup_files(destination, &ctx.config.base_name)
-        .map(sort_by_modified_time)?;
-    
+    let backups =
+        find_backup_files(destination, &ctx.config.base_name).map(sort_by_modified_time)?;
+
     println!("Found {} backup files", backups.len());
-    
+
     if backups.len() > ctx.config.max_backups {
         let to_delete = files_to_delete(backups, ctx.config.max_backups);
         println!("Deleting {} old backup(s)...", to_delete.len());
-        
-        to_delete.iter()
+
+        to_delete
+            .iter()
             .try_for_each(|path| delete_file_logged(path, &ctx.log_path))?;
     } else {
-        println!("No cleanup needed. Have {} backups, keeping {}", 
-                 backups.len(), ctx.config.max_backups);
+        println!(
+            "No cleanup needed. Have {} backups, keeping {}",
+            backups.len(),
+            ctx.config.max_backups
+        );
     }
-    
+
     Ok(())
 }
 
@@ -241,7 +241,7 @@ fn process_entry_with_prefix(
 ) -> Result<usize> {
     let path = entry.path();
     let name = path.strip_prefix(source)?;
-    
+
     if !name.as_os_str().is_empty() {
         let full_name = prefix.join(name);
         if path.is_file() {
@@ -261,33 +261,34 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
     let destination = Path::new(&ctx.config.destination_path);
     let zip_name = generate_zip_name(&ctx.config.base_name, &ctx.timestamp);
     let zip_path = destination.join(&zip_name);
-    
+
     let file = File::create(&zip_path)?;
     let mut zip = zip::ZipWriter::new(file);
-    
+
     let compression_level = ctx.config.compression_level.unwrap_or(5);
     let options = FileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(compression_level as i32))
         .large_file(true);
-    
+
     let single_source = sources.len() == 1;
     let result: Result<usize> = (|| {
         let mut total_files = 0usize;
-        
+
         for source_str in &sources {
             let source = Path::new(source_str);
-            
+
             // For multiple sources, create a folder in the zip with the source's name
             let prefix = if single_source {
                 PathBuf::new()
             } else {
                 // Use the folder name as the prefix
-                source.file_name()
+                source
+                    .file_name()
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER_NAME))
             };
-            
+
             // Accumulate file counts using functional composition with try_fold
             let count = WalkDir::new(source)
                 .into_iter()
@@ -296,17 +297,21 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
                     process_entry_with_prefix(&mut zip, entry, source, &prefix, options)
                         .map(|file_count| acc + file_count)
                 })?;
-            
+
             total_files += count;
         }
-        
+
         zip.finish()?;
         Ok(total_files)
     })();
 
     match result {
         Ok(total_files) => {
-            println!("Backup created: {} ({} files)", zip_path.display(), total_files);
+            println!(
+                "Backup created: {} ({} files)",
+                zip_path.display(),
+                total_files
+            );
             Ok(())
         }
         Err(err) => {
@@ -323,14 +328,14 @@ fn build_context() -> Result<BackupContext> {
     let log_path = build_log_path()?;
     let config = load_or_create_config(&config_path)?;
     let timestamp = generate_timestamp();
-    
+
     // Warn if both source_folder and source_folders are configured
     if config.source_folder.is_some() && !config.source_folders.is_empty() {
         eprintln!("Warning: Both 'source_folder' and 'source_folders' are configured.");
         eprintln!("Using 'source_folders' and ignoring 'source_folder'.");
         eprintln!();
     }
-    
+
     Ok(BackupContext {
         config,
         log_path,
@@ -348,7 +353,7 @@ fn format_header(ctx: &BackupContext) -> Vec<String> {
         format!("Log file: {}", ctx.log_path.display()),
         String::new(),
     ];
-    
+
     if sources.len() == 1 {
         lines.push(format!("Source: {}", sources[0]));
     } else {
@@ -357,14 +362,14 @@ fn format_header(ctx: &BackupContext) -> Vec<String> {
             lines.push(format!("  - {}", source));
         }
     }
-    
+
     lines.extend(vec![
         format!("Destination: {}", ctx.config.destination_path),
         format!("Backup filename: {}", zip_name),
         format!("Keeping the last {} backups", ctx.config.max_backups),
         String::new(),
     ]);
-    
+
     lines
 }
 
@@ -377,15 +382,15 @@ fn print_lines(lines: Vec<String>) {
 fn validate_backup_paths(ctx: &BackupContext) -> Result<()> {
     let sources = ctx.config.get_source_folders();
     let destination = Path::new(&ctx.config.destination_path);
-    
+
     if sources.is_empty() {
         return Err("No source folders configured".into());
     }
-    
+
     for source in &sources {
         validate_path(Path::new(source), "Source folder")?;
     }
-    
+
     validate_path(destination, "Destination folder")?;
     Ok(())
 }
@@ -393,14 +398,14 @@ fn validate_backup_paths(ctx: &BackupContext) -> Result<()> {
 // Main backup workflow as function composition
 fn run_backup(ctx: &BackupContext) -> Result<()> {
     let zip_name = generate_zip_name(&ctx.config.base_name, &ctx.timestamp);
-    
+
     validate_backup_paths(ctx)?;
-    
+
     let backup_result = with_logging(ctx, &format!("Creating: {}", zip_name), || {
         println!("Creating zip archive...");
         create_zip_backup(ctx)
     });
-    
+
     println!();
     let cleanup_result = with_logging(ctx, "Cleaning up old backups...", || {
         cleanup_old_backups(ctx)
@@ -438,19 +443,19 @@ fn handle_error(e: Box<dyn std::error::Error>, config_path: &Path) -> ! {
 }
 
 fn main() {
-    let result = build_context()
-        .and_then(|ctx| {
-            print_lines(format_header(&ctx));
-            
-            let log_start = format!("Backup started at: {}", 
-                Local::now().format("%Y-%m-%d %H:%M:%S"));
-            append_log(&ctx.log_path, "==========================================").ok();
-            append_log(&ctx.log_path, &log_start).ok();
-            
-            run_backup(&ctx)
-                .map(|_| ctx)
-        });
-    
+    let result = build_context().and_then(|ctx| {
+        print_lines(format_header(&ctx));
+
+        let log_start = format!(
+            "Backup started at: {}",
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
+        append_log(&ctx.log_path, "==========================================").ok();
+        append_log(&ctx.log_path, &log_start).ok();
+
+        run_backup(&ctx).map(|_| ctx)
+    });
+
     match result {
         Ok(ctx) => {
             append_log(&ctx.log_path, "==========================================").ok();
@@ -499,7 +504,7 @@ mod tests {
         let sorted = sort_by_modified_time(files);
         // Newest should be first
         assert_eq!(sorted[0], f3, "Newest file should be first");
-        
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -512,7 +517,7 @@ mod tests {
         let f1 = create_test_zip(&dir, "Backup_20260101_000000.zip"); // oldest
         let _f2 = create_test_zip(&dir, "Backup_20260102_000000.zip");
         let _f3 = create_test_zip(&dir, "Backup_20260103_000000.zip"); // newest
-        
+
         let files = vec![
             dir.join("Backup_20260101_000000.zip"),
             dir.join("Backup_20260102_000000.zip"),
@@ -547,12 +552,9 @@ mod tests {
 
     #[test]
     fn test_no_delete_when_below_limit() {
-        let files: Vec<PathBuf> = vec![
-            PathBuf::from("a.zip"),
-            PathBuf::from("b.zip"),
-        ];
+        let files: Vec<PathBuf> = vec![PathBuf::from("a.zip"), PathBuf::from("b.zip")];
         let max_backups = 3;
-        
+
         // files.len() (2) <= max_backups (3), so nothing should be deleted
         assert!(files.len() <= max_backups);
         // files_to_delete should return empty when files.len() == max_backups
