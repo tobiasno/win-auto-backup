@@ -429,3 +429,98 @@ fn main() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    fn create_test_zip(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, b"fake zip").unwrap();
+        // Sleep briefly so each file gets a distinct modification time
+        thread::sleep(Duration::from_millis(10));
+        path
+    }
+
+    #[test]
+    fn test_sort_newest_first() {
+        let dir = std::env::temp_dir().join("backup_test_sort");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let _f1 = create_test_zip(&dir, "Backup_20260101_000000.zip");
+        let _f2 = create_test_zip(&dir, "Backup_20260102_000000.zip");
+        let f3 = create_test_zip(&dir, "Backup_20260103_000000.zip");
+
+        let files = vec![
+            dir.join("Backup_20260101_000000.zip"),
+            dir.join("Backup_20260102_000000.zip"),
+            dir.join("Backup_20260103_000000.zip"),
+        ];
+
+        let sorted = sort_by_modified_time(files);
+        // Newest should be first
+        assert_eq!(sorted[0], f3, "Newest file should be first");
+        
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_files_to_delete_skips_newest() {
+        let dir = std::env::temp_dir().join("backup_test_delete");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let f1 = create_test_zip(&dir, "Backup_20260101_000000.zip"); // oldest
+        let _f2 = create_test_zip(&dir, "Backup_20260102_000000.zip");
+        let _f3 = create_test_zip(&dir, "Backup_20260103_000000.zip"); // newest
+        
+        let files = vec![
+            dir.join("Backup_20260101_000000.zip"),
+            dir.join("Backup_20260102_000000.zip"),
+            dir.join("Backup_20260103_000000.zip"),
+        ];
+
+        let sorted = sort_by_modified_time(files);
+        let to_delete = files_to_delete(sorted, 2);
+
+        assert_eq!(to_delete.len(), 1);
+        assert_eq!(to_delete[0], f1, "Oldest file should be deleted");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_find_backup_files_matches_pattern() {
+        let dir = std::env::temp_dir().join("backup_test_find");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("Backup_20260101_000000.zip"), b"").unwrap();
+        fs::write(dir.join("Backup_20260102_000000.zip"), b"").unwrap();
+        fs::write(dir.join("other_file.txt"), b"").unwrap();
+        fs::write(dir.join("NotBackup_20260103_000000.zip"), b"").unwrap();
+
+        let found = find_backup_files(&dir, "Backup").unwrap();
+        assert_eq!(found.len(), 2, "Should find exactly 2 backup files");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_no_delete_when_below_limit() {
+        let files: Vec<PathBuf> = vec![
+            PathBuf::from("a.zip"),
+            PathBuf::from("b.zip"),
+        ];
+        let max_backups = 3;
+        
+        // files.len() (2) <= max_backups (3), so nothing should be deleted
+        assert!(files.len() <= max_backups);
+        // files_to_delete should return empty when files.len() == max_backups
+        let to_delete = files_to_delete(files.clone(), max_backups);
+        assert_eq!(to_delete.len(), 0);
+    }
+}
