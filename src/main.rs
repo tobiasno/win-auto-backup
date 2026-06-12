@@ -154,7 +154,7 @@ fn find_backup_files(destination: &Path, base_name: &str) -> Result<Vec<PathBuf>
 
 // Pure function to sort files by modification time
 fn sort_by_modified_time(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
-    files.sort_by_key(|path| {
+    files.sort_by_cached_key(|path| {
         fs::metadata(path)
             .and_then(|m| m.modified())
             .ok()
