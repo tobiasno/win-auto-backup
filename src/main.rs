@@ -448,7 +448,7 @@ fn run_backup(ctx: &BackupContext) -> Result<()> {
 }
 
 // Error handling as a function
-fn handle_error(e: Box<dyn std::error::Error>, config_path: &Path) -> ! {
+fn handle_fatal_error(e: Box<dyn std::error::Error>, config_path: &Path) -> ! {
     eprintln!("Error: {}", e);
     if !config_path.as_os_str().is_empty() {
         eprintln!("Config location: {}", config_path.display());
@@ -480,7 +480,7 @@ fn main() {
         }
         Err(e) => {
             let config_path = build_config_path().unwrap_or_default();
-            handle_error(e, &config_path)
+            handle_fatal_error(e, &config_path)
         }
     }
 }
