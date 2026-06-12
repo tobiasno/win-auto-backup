@@ -262,7 +262,8 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
     let compression_level = ctx.config.compression_level.unwrap_or(5);
     let options = FileOptions::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(compression_level as i32));
+        .compression_level(Some(compression_level as i32))
+        .large_file(true);
     
     let single_source = sources.len() == 1;
     let mut total_files = 0usize;
@@ -287,9 +288,20 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
             .try_fold(0, |acc, entry| {
                 process_entry_with_prefix(&mut zip, entry, source, &prefix, options)
                     .map(|file_count| acc + file_count)
-            })?;
+            });
         
-        total_files += count;
+        match count {
+            Ok(c) => total_files += c,
+            Err(e) => {
+                // Explicitly drop the ZipWriter to release its file handle before
+                // attempting to delete the partial zip (required on Windows).
+                drop(zip);
+                if let Err(remove_err) = fs::remove_file(&zip_path) {
+                    eprintln!("Warning: could not remove partial zip '{}': {}", zip_path.display(), remove_err);
+                }
+                return Err(e);
+            }
+        }
     }
     
     zip.finish()?;
@@ -396,7 +408,7 @@ fn run_backup(ctx: &BackupContext) -> Result<()> {
 
 // Error handling as a function
 fn handle_error(e: Box<dyn std::error::Error>, config_path: &Path) -> ! {
-    eprintln!("Error loading config: {}", e);
+    eprintln!("Error: {}", e);
     eprintln!("Config location: {}", config_path.display());
     std::process::exit(1)
 }
