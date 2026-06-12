@@ -430,7 +430,11 @@ fn run_backup(ctx: &BackupContext) -> Result<()> {
                 &format!("Cleanup failed after successful backup: {}", cleanup_err),
             )
             .ok();
-            Err(format!("Backup created successfully, but cleanup failed: {}", cleanup_err).into())
+            Err(format!(
+                "Backup created successfully, but cleanup failed: {}",
+                cleanup_err
+            )
+            .into())
         }
         (Err(backup_err), Err(cleanup_err)) => {
             append_log(
