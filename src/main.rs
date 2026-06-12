@@ -180,6 +180,12 @@ fn delete_file_logged(path: &PathBuf, log_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn remove_partial_backup(path: &Path) {
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+}
+
 // Functional cleanup using composition
 fn cleanup_old_backups(ctx: &BackupContext) -> Result<()> {
     let destination = Path::new(&ctx.config.destination_path);
@@ -262,39 +268,53 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
     let compression_level = ctx.config.compression_level.unwrap_or(5);
     let options = FileOptions::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(compression_level as i32));
+        .compression_level(Some(compression_level as i32))
+        .large_file(true);
     
     let single_source = sources.len() == 1;
-    let mut total_files = 0usize;
-    
-    for source_str in &sources {
-        let source = Path::new(source_str);
+    let result: Result<usize> = (|| {
+        let mut total_files = 0usize;
         
-        // For multiple sources, create a folder in the zip with the source's name
-        let prefix = if single_source {
-            PathBuf::new()
-        } else {
-            // Use the folder name as the prefix
-            source.file_name()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER_NAME))
-        };
+        for source_str in &sources {
+            let source = Path::new(source_str);
+            
+            // For multiple sources, create a folder in the zip with the source's name
+            let prefix = if single_source {
+                PathBuf::new()
+            } else {
+                // Use the folder name as the prefix
+                source.file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_FOLDER_NAME))
+            };
+            
+            // Accumulate file counts using functional composition with try_fold
+            let count = WalkDir::new(source)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .try_fold(0, |acc, entry| {
+                    process_entry_with_prefix(&mut zip, entry, source, &prefix, options)
+                        .map(|file_count| acc + file_count)
+                })?;
+            
+            total_files += count;
+        }
         
-        // Accumulate file counts using functional composition with try_fold
-        let count = WalkDir::new(source)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .try_fold(0, |acc, entry| {
-                process_entry_with_prefix(&mut zip, entry, source, &prefix, options)
-                    .map(|file_count| acc + file_count)
-            })?;
-        
-        total_files += count;
+        zip.finish()?;
+        Ok(total_files)
+    })();
+
+    match result {
+        Ok(total_files) => {
+            println!("Backup created: {} ({} files)", zip_path.display(), total_files);
+            Ok(())
+        }
+        Err(err) => {
+            drop(zip);
+            remove_partial_backup(&zip_path);
+            Err(err)
+        }
     }
-    
-    zip.finish()?;
-    println!("Backup created: {} ({} files)", zip_path.display(), total_files);
-    Ok(())
 }
 
 // Build context - gathering all configuration
@@ -376,22 +396,38 @@ fn run_backup(ctx: &BackupContext) -> Result<()> {
     
     validate_backup_paths(ctx)?;
     
-    with_logging(ctx, &format!("Creating: {}", zip_name), || {
+    let backup_result = with_logging(ctx, &format!("Creating: {}", zip_name), || {
         println!("Creating zip archive...");
         create_zip_backup(ctx)
-    })?;
+    });
     
     println!();
-    println!("SUCCESS: Backup completed successfully!");
-    append_log(&ctx.log_path, "SUCCESS: Backup created").ok();
-    
-    println!();
-    with_logging(ctx, "Cleaning up old backups...", || {
+    let cleanup_result = with_logging(ctx, "Cleaning up old backups...", || {
         cleanup_old_backups(ctx)
-    })?;
-    
-    append_log(&ctx.log_path, "Backup cleanup completed").ok();
-    Ok(())
+    });
+
+    match (backup_result, cleanup_result) {
+        (Ok(()), Ok(())) => {
+            println!();
+            println!("SUCCESS: Backup completed successfully!");
+            append_log(&ctx.log_path, "SUCCESS: Backup created").ok();
+            append_log(&ctx.log_path, "Backup cleanup completed").ok();
+            Ok(())
+        }
+        (Err(backup_err), Ok(())) => {
+            append_log(&ctx.log_path, "Backup cleanup completed").ok();
+            Err(backup_err)
+        }
+        (Ok(()), Err(cleanup_err)) => Err(cleanup_err),
+        (Err(backup_err), Err(cleanup_err)) => {
+            append_log(
+                &ctx.log_path,
+                &format!("Cleanup failed after backup error: {}", cleanup_err),
+            )
+            .ok();
+            Err(backup_err)
+        }
+    }
 }
 
 // Error handling as a function
@@ -522,5 +558,72 @@ mod tests {
         // files_to_delete should return empty when files.len() == max_backups
         let to_delete = files_to_delete(files.clone(), max_backups);
         assert_eq!(to_delete.len(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_old_backups_keeps_limit() {
+        let dir = std::env::temp_dir().join("backup_test_cleanup");
+        let log_path = dir.join("backup.log");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        create_test_zip(&dir, "Backup_20260101_000000.zip");
+        create_test_zip(&dir, "Backup_20260102_000000.zip");
+        create_test_zip(&dir, "Backup_20260103_000000.zip");
+        create_test_zip(&dir, "Backup_20260104_000000.zip");
+        create_test_zip(&dir, "Backup_20260105_000000.zip");
+
+        let ctx = BackupContext {
+            config: Config {
+                source_folder: None,
+                source_folders: vec![],
+                destination_path: dir.to_string_lossy().to_string(),
+                base_name: String::from("Backup"),
+                max_backups: 3,
+                compression_level: Some(5),
+            },
+            log_path,
+            timestamp: String::from("20260105_000000"),
+        };
+
+        cleanup_old_backups(&ctx).unwrap();
+
+        let remaining = find_backup_files(&dir, "Backup")
+            .map(sort_by_modified_time)
+            .unwrap();
+        assert_eq!(remaining.len(), 3, "Should keep only 3 backups");
+
+        let remaining_names: Vec<String> = remaining
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .map(String::from)
+            .collect();
+
+        assert_eq!(
+            remaining_names,
+            vec![
+                "Backup_20260105_000000.zip",
+                "Backup_20260104_000000.zip",
+                "Backup_20260103_000000.zip",
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_remove_partial_backup_deletes_file() {
+        let dir = std::env::temp_dir().join("backup_test_partial_cleanup");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let partial = dir.join("Backup_partial.zip");
+        fs::write(&partial, b"incomplete").unwrap();
+
+        remove_partial_backup(&partial);
+
+        assert!(!partial.exists(), "Partial backup should be removed");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
