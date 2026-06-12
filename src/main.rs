@@ -293,9 +293,12 @@ fn create_zip_backup(ctx: &BackupContext) -> Result<()> {
         match count {
             Ok(c) => total_files += c,
             Err(e) => {
-                // Clean up the partial zip file before propagating the error
+                // Explicitly drop the ZipWriter to release its file handle before
+                // attempting to delete the partial zip (required on Windows).
                 drop(zip);
-                let _ = fs::remove_file(&zip_path);
+                if let Err(remove_err) = fs::remove_file(&zip_path) {
+                    eprintln!("Warning: could not remove partial zip '{}': {}", zip_path.display(), remove_err);
+                }
                 return Err(e);
             }
         }
