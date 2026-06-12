@@ -423,7 +423,15 @@ fn run_backup(ctx: &BackupContext) -> Result<()> {
             append_log(&ctx.log_path, "Backup cleanup completed").ok();
             Err(backup_err)
         }
-        (Ok(()), Err(cleanup_err)) => Err(cleanup_err),
+        (Ok(()), Err(cleanup_err)) => {
+            append_log(&ctx.log_path, "SUCCESS: Backup created").ok();
+            append_log(
+                &ctx.log_path,
+                &format!("Cleanup failed after successful backup: {}", cleanup_err),
+            )
+            .ok();
+            Err(format!("Backup created successfully, but cleanup failed: {}", cleanup_err).into())
+        }
         (Err(backup_err), Err(cleanup_err)) => {
             append_log(
                 &ctx.log_path,
@@ -437,8 +445,10 @@ fn run_backup(ctx: &BackupContext) -> Result<()> {
 
 // Error handling as a function
 fn handle_error(e: Box<dyn std::error::Error>, config_path: &Path) -> ! {
-    eprintln!("Error loading config: {}", e);
-    eprintln!("Config location: {}", config_path.display());
+    eprintln!("Error: {}", e);
+    if !config_path.as_os_str().is_empty() {
+        eprintln!("Config location: {}", config_path.display());
+    }
     std::process::exit(1)
 }
 
